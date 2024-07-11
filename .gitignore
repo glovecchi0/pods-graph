@@ -1,0 +1,8 @@
+# Files that may contain secrets
+*.yml*
+*.yaml*
+
+# Temporary files
+**/*.swp
+**/venv/*
+.DS_Store
