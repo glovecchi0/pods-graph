@@ -5,15 +5,11 @@ import matplotlib.pyplot as plt
 from kubernetes import client, config
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+import fnmatch
 
 
 def load_kube_config(kubeconfig_path):
-    """
-    Load the Kubernetes configuration from the specified path.
-
-    Args:
-    kubeconfig_path (str): Path to the kubeconfig file.
-    """
+    """Load the Kubernetes configuration from the specified path."""
     try:
         config.load_kube_config(config_file=kubeconfig_path)
     except Exception as e:
@@ -22,245 +18,139 @@ def load_kube_config(kubeconfig_path):
 
 
 @lru_cache(maxsize=None)
-def get_pods(api_instance, namespace):
+def get_resources(api_instance, resource_type, namespace=None):
     """
-    Retrieve all pods in the specified Kubernetes namespace.
-    If namespace is None, retrieves pods from all namespaces.
-
+    Retrieve Kubernetes resources of a specified type in the given namespace.
+    
     Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespace (str): Kubernetes namespace to retrieve pods from.
-
+        api_instance (client.CoreV1Api): Kubernetes API instance.
+        resource_type (str): Type of the resource to retrieve ('pods', 'pvcs', 'volumes').
+        namespace (str, optional): Kubernetes namespace to retrieve resources from.
+        
     Returns:
-    list: List of pods.
+        list: List of resources.
     """
     try:
-        if namespace:
-            return api_instance.list_namespaced_pod(namespace=namespace).items
-        else:
+        if resource_type == 'pods':
+            if namespace:
+                return api_instance.list_namespaced_pod(namespace=namespace).items
             return api_instance.list_pod_for_all_namespaces().items
-    except Exception as e:
-        print(f"Failed to get pods: {e}")
-        return []
-
-
-@lru_cache(maxsize=None)
-def get_pvcs(api_instance, namespace):
-    """
-    Retrieve all PersistentVolumeClaims (PVCs) in the specified Kubernetes namespace.
-    If namespace is None, retrieves PVCs from all namespaces.
-
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespace (str): Kubernetes namespace to retrieve PVCs from.
-
-    Returns:
-    list: List of PVCs.
-    """
-    try:
-        if namespace:
-            return api_instance.list_namespaced_persistent_volume_claim(namespace=namespace).items
-        else:
+        
+        if resource_type == 'pvcs':
+            if namespace:
+                return api_instance.list_namespaced_persistent_volume_claim(namespace=namespace).items
             return api_instance.list_persistent_volume_claim_for_all_namespaces().items
+        
+        if resource_type == 'volumes':
+            return api_instance.list_persistent_volume().items
+        
     except Exception as e:
-        print(f"Failed to get PVCs: {e}")
+        print(f"Failed to get {resource_type}: {e}")
         return []
 
 
-@lru_cache(maxsize=None)
-def get_volumes(api_instance):
+def get_resource_status(api_instance, resource_type, namespace, name):
     """
-    Retrieve all PersistentVolumes (PVs) in the Kubernetes cluster.
-
+    Retrieve the status of a Kubernetes resource.
+    
     Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-
+        api_instance (client.CoreV1Api): Kubernetes API instance.
+        resource_type (str): Type of the resource ('pod', 'pvc', 'volume').
+        namespace (str): Kubernetes namespace of the resource.
+        name (str): Name of the resource.
+        
     Returns:
-    list: List of PVs.
+        str: Status of the resource.
     """
     try:
-        return api_instance.list_persistent_volume().items
+        if resource_type == 'pod':
+            status = api_instance.read_namespaced_pod_status(name=name, namespace=namespace)
+            return status.status.phase
+        
+        if resource_type == 'pvc':
+            status = api_instance.read_namespaced_persistent_volume_claim_status(name=name, namespace=namespace)
+            return status.status.phase
+        
+        if resource_type == 'volume':
+            status = api_instance.read_persistent_volume(name=name)
+            return status.status.phase
+            
     except Exception as e:
-        print(f"Failed to get volumes: {e}")
-        return []
-
-
-def get_pod_status(api_instance, namespace, pod_name):
-    """
-    Retrieve the status of a pod in the specified Kubernetes namespace.
-
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespace (str): Kubernetes namespace of the pod.
-    pod_name (str): Name of the pod.
-
-    Returns:
-    str: Status of the pod.
-    """
-    try:
-        pod_status = api_instance.read_namespaced_pod_status(
-            name=pod_name, namespace=namespace)
-        return pod_status.status.phase
-    except Exception as e:
-        print(
-            f"Failed to get status for pod {pod_name} in namespace {namespace}: {e}")
+        print(f"Failed to get status for {resource_type} {name}: {e}")
         return "Unknown"
 
 
-def get_pvc_status(api_instance, namespace, pvc_name):
+def get_resource_capacity(api_instance, resource_type, name, namespace=None):
     """
-    Retrieve the status of a PVC in the specified Kubernetes namespace.
-
+    Retrieve the capacity of a Kubernetes resource.
+    
     Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespace (str): Kubernetes namespace of the PVC.
-    pvc_name (str): Name of the PVC.
-
+        api_instance (client.CoreV1Api): Kubernetes API instance.
+        resource_type (str): Type of the resource ('pvc', 'volume').
+        name (str): Name of the resource.
+        namespace (str, optional): Namespace for PVCs.
+        
     Returns:
-    str: Status of the PVC.
+        str: Capacity of the resource.
     """
     try:
-        pvc_status = api_instance.read_namespaced_persistent_volume_claim_status(
-            name=pvc_name, namespace=namespace)
-        return pvc_status.status.phase
+        if resource_type == 'pvc':
+            pvc = api_instance.read_namespaced_persistent_volume_claim(name=name, namespace=namespace)
+            return pvc.spec.resources.requests['storage']
+        
+        if resource_type == 'volume':
+            volume = api_instance.read_persistent_volume(name=name)
+            return volume.spec.capacity['storage']
+            
     except Exception as e:
-        print(
-            f"Failed to get status for PVC {pvc_name} in namespace {namespace}: {e}")
-        return "Unknown"
-
-
-def get_volume_status(api_instance, volume_name):
-    """
-    Retrieve the status of a PV (volume) in the Kubernetes cluster.
-
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    volume_name (str): Name of the PV (volume).
-
-    Returns:
-    str: Status of the PV (volume).
-    """
-    try:
-        volume_status = api_instance.read_persistent_volume(name=volume_name)
-        return volume_status.status.phase
-    except Exception as e:
-        print(f"Failed to get status for volume {volume_name}: {e}")
-        return "Unknown"
-
-
-def get_pvc_capacity(api_instance, namespace, pvc_name):
-    """
-    Retrieve the capacity of a PVC in the specified Kubernetes namespace.
-
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespace (str): Kubernetes namespace of the PVC.
-    pvc_name (str): Name of the PVC.
-
-    Returns:
-    str: Capacity of the PVC.
-    """
-    try:
-        pvc = api_instance.read_namespaced_persistent_volume_claim(
-            name=pvc_name, namespace=namespace)
-        return pvc.spec.resources.requests['storage']
-    except Exception as e:
-        print(
-            f"Failed to get capacity for PVC {pvc_name} in namespace {namespace}: {e}")
-        return "Unknown"
-
-
-def get_volume_capacity(api_instance, volume_name):
-    """
-    Retrieve the capacity of a PV (volume) in the Kubernetes cluster.
-
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    volume_name (str): Name of the PV (volume).
-
-    Returns:
-    str: Capacity of the PV (volume).
-    """
-    try:
-        volume = api_instance.read_persistent_volume(name=volume_name)
-        return volume.spec.capacity['storage']
-    except Exception as e:
-        print(f"Failed to get capacity for volume {volume_name}: {e}")
+        print(f"Failed to get capacity for {resource_type} {name}: {e}")
         return "Unknown"
 
 
 def create_resource_graph(pods, pvcs, volumes, api_instance):
-    """
-    Create a directed graph of Kubernetes resources.
-
-    Args:
-    pods (list): List of pods.
-    pvcs (list): List of PVCs.
-    volumes (list): List of PVs.
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-
-    Returns:
-    networkx.DiGraph: Directed graph of resources.
-    """
+    """Create a directed graph of Kubernetes resources."""
     G = nx.DiGraph()
-
-    # Add nodes and edges for pods
+    pvc_names = set()
+    
     for pod in pods:
         pod_name = pod.metadata.name
-        pod_status = get_pod_status(
-            api_instance, pod.metadata.namespace, pod_name)
-        # Use the pod name and status as the label
+        pod_status = get_resource_status(api_instance, 'pod', pod.metadata.namespace, pod_name)
         G.add_node(pod_name, label=f"{pod_name}\nStatus: {pod_status}")
+        
         for volume in pod.spec.volumes:
             if volume.persistent_volume_claim:
                 pvc_name = volume.persistent_volume_claim.claim_name
-                pvc_capacity = get_pvc_capacity(
-                    api_instance, pod.metadata.namespace, pvc_name)
-                pvc_status = get_pvc_status(
-                    api_instance, pod.metadata.namespace, pvc_name)
-                # Use the PVC name, capacity, status and type as the label
-                G.add_node(
-                    pvc_name, label=f"{pvc_name}\nCapacity: {pvc_capacity}\nStatus: {pvc_status}\nType: PVC")
+                pvc_names.add(pvc_name)
+                pvc_capacity = get_resource_capacity(api_instance, 'pvc', pvc_name, pod.metadata.namespace)
+                pvc_status = get_resource_status(api_instance, 'pvc', pod.metadata.namespace, pvc_name)
+                G.add_node(pvc_name, label=f"{pvc_name}\nCapacity: {pvc_capacity}\nStatus: {pvc_status}\nType: PVC")
                 G.add_edge(pod_name, pvc_name, label='uses')
-
-    # Add nodes and edges for PVCs
+    
     for pvc in pvcs:
-        pvc_name = pvc.metadata.name
-        pvc_capacity = get_pvc_capacity(
-            api_instance, pvc.metadata.namespace, pvc_name)
-        pvc_status = get_pvc_status(
-            api_instance, pvc.metadata.namespace, pvc_name)
-        # Use the PVC name, capacity, status and type as the label
-        G.add_node(
-            pvc_name, label=f"{pvc_name}\nCapacity: {pvc_capacity}\nStatus: {pvc_status}\nType: PVC")
-        if pvc.spec.volume_name:
-            volume_name = pvc.spec.volume_name
-            volume_capacity = get_volume_capacity(api_instance, volume_name)
-            volume_status = get_volume_status(api_instance, volume_name)
-            # Use the PV name, capacity, status and type as the label
-            G.add_node(
-                volume_name, label=f"{volume_name}\nCapacity: {volume_capacity}\nStatus: {volume_status}\nType: Volume")
-            G.add_edge(pvc_name, volume_name, label='bound to')
-
-    # Add nodes for Volumes
+        if pvc.metadata.name in pvc_names:
+            pvc_name = pvc.metadata.name
+            pvc_capacity = get_resource_capacity(api_instance, 'pvc', pvc_name, pvc.metadata.namespace)
+            pvc_status = get_resource_status(api_instance, 'pvc', pvc.metadata.namespace, pvc_name)
+            G.add_node(pvc_name, label=f"{pvc_name}\nCapacity: {pvc_capacity}\nStatus: {pvc_status}\nType: PVC")
+            
+            if pvc.spec.volume_name:
+                volume_name = pvc.spec.volume_name
+                volume_capacity = get_resource_capacity(api_instance, 'volume', volume_name)
+                volume_status = get_resource_status(api_instance, 'volume', None, volume_name)
+                G.add_node(volume_name, label=f"{volume_name}\nCapacity: {volume_capacity}\nStatus: {volume_status}\nType: Volume")
+                G.add_edge(pvc_name, volume_name, label='bound to')
+    
     for volume in volumes:
         volume_name = volume.metadata.name
-        volume_capacity = get_volume_capacity(api_instance, volume_name)
-        volume_status = get_volume_status(api_instance, volume_name)
-        # Use the PV name, capacity, status and type as the label
-        G.add_node(
-            volume_name, label=f"{volume_name}\nCapacity: {volume_capacity}\nStatus: {volume_status}\nType: Volume")
-
+        volume_capacity = get_resource_capacity(api_instance, 'volume', volume_name)
+        volume_status = get_resource_status(api_instance, 'volume', None, volume_name)
+        G.add_node(volume_name, label=f"{volume_name}\nCapacity: {volume_capacity}\nStatus: {volume_status}\nType: Volume")
+    
     return G
 
 
 def draw_graph(G):
-    """
-    Draw the Kubernetes resource graph.
-
-    Args:
-    G (networkx.DiGraph): Directed graph of resources.
-    """
+    """Draw the directed graph of Kubernetes resources."""
     pos = nx.spring_layout(G, seed=42)
     labels = nx.get_edge_attributes(G, 'label')
     node_labels = nx.get_node_attributes(G, 'label')
@@ -273,46 +163,46 @@ def draw_graph(G):
     plt.show()
 
 
-def fetch_resources(api_instance, namespaces):
-    """
-    Fetch Kubernetes resources (pods, PVCs, volumes) from the specified namespaces.
+def fetch_resources(api_instance, namespaces, pod_patterns):
+    """Fetch Kubernetes resources (pods, PVCs, volumes) from the specified namespaces."""
+    def matches_pattern(name, patterns):
+        """Check if the pod name matches any of the provided patterns."""
+        return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
 
-    Args:
-    api_instance (client.CoreV1Api): Kubernetes API instance.
-    namespaces (list): List of namespaces to fetch resources from.
-
-    Returns:
-    tuple: Lists of pods, PVCs, and volumes.
-    """
     pods = []
     pvcs = []
 
     if namespaces:
         with ThreadPoolExecutor() as executor:
-            pods = sum(executor.map(lambda ns: get_pods(
-                api_instance, ns), namespaces), [])
-            pvcs = sum(executor.map(lambda ns: get_pvcs(
-                api_instance, ns), namespaces), [])
-    else:
-        pods = get_pods(api_instance, None)
-        pvcs = get_pvcs(api_instance, None)
+            all_pods = sum(executor.map(lambda ns: get_resources(api_instance, 'pods', ns), namespaces), [])
+            if pod_patterns:
+                pods = [pod for pod in all_pods if matches_pattern(pod.metadata.name, pod_patterns)]
+            else:
+                pods = all_pods
 
-    volumes = get_volumes(api_instance)
+            pvcs = sum(executor.map(lambda ns: get_resources(api_instance, 'pvcs', ns), namespaces), [])
+    else:
+        all_pods = get_resources(api_instance, 'pods')
+        if pod_patterns:
+            pods = [pod for pod in all_pods if matches_pattern(pod.metadata.name, pod_patterns)]
+        else:
+            pods = all_pods
+
+        pvcs = get_resources(api_instance, 'pvcs')
+
+    volumes = get_resources(api_instance, 'volumes')
     return pods, pvcs, volumes
 
 
-def main(kubeconfig_path, namespaces):
-    """
-    Main function to generate and display the Kubernetes resource graph.
+def main(kubeconfig_path, namespaces, pod_patterns):
+    """Main function to generate and display the Kubernetes resource graph."""
+    if not (namespaces or not pod_patterns):
+        raise ValueError("Pod patterns (-p) can only be used with namespaces (-n).")
 
-    Args:
-    kubeconfig_path (str): Path to the kubeconfig file.
-    namespaces (list): List of namespaces to fetch resources from.
-    """
     load_kube_config(kubeconfig_path)
     api_instance = client.CoreV1Api()
 
-    pods, pvcs, volumes = fetch_resources(api_instance, namespaces)
+    pods, pvcs, volumes = fetch_resources(api_instance, namespaces, pod_patterns)
     G = create_resource_graph(pods, pvcs, volumes, api_instance)
     draw_graph(G)
 
@@ -320,28 +210,35 @@ def main(kubeconfig_path, namespaces):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "This script generates a graph of Kubernetes resources such as Pods, Persistent Volume Claims (PVCs), "
-            "and Persistent Volumes (PVs). It fetches these resources from specified Kubernetes namespaces and "
+            "Generate a graph of Kubernetes resources such as Pods, Persistent Volume Claims (PVCs), "
+            "and Persistent Volumes (PVs). Fetches resources from specified Kubernetes namespaces and "
             "visually represents their relationships.\n\n"
         ),
         epilog=(
             "Example usage:\n"
-            "  python graph.py -k ~/.kube/config -n default\n"
+            "  python graph.py -k ~/.kube/config -n default -p pod-name-1-hash pod-name-2-*\n"
         )
     )
     parser.add_argument(
         '-k', '--kubeconfig',
         type=str,
         default=os.path.expanduser("~/.kube/config"),
-        help='Path to the kubeconfig file (default: ~/.kube/config). This file is used to authenticate and configure access to your Kubernetes cluster.'
+        help='Path to the kubeconfig file (default: ~/.kube/config).'
     )
     parser.add_argument(
         '-n', '--namespaces',
         type=str,
         nargs='*',
         default=None,
-        help='Kubernetes namespace(s) to use. If not specified, the script fetches resources from all namespaces. Example: -n default kube-system.'
+        help='Kubernetes namespace(s) to use. If not specified, fetches resources from all namespaces.'
+    )
+    parser.add_argument(
+        '-p', '--pods',
+        type=str,
+        nargs='*',
+        default=None,
+        help='Pod name patterns to filter. Use wildcard patterns as needed.'
     )
     args = parser.parse_args()
 
-    main(args.kubeconfig, args.namespaces)
+    main(args.kubeconfig, args.namespaces, args.pods)
